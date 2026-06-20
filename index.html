@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HandBridge — Remote Hand Tracking</title>
+
+  <!-- MediaPipe Hands -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675465978/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675465978/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <!-- Socket.IO (loaded from the same server) -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <!-- SimplePeer for WebRTC -->
+  <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #13131a;
+      --surface2: #1c1c28;
+      --border: #2a2a3d;
+      --accent: #7c6cff;
+      --accent2: #ff6cb2;
+      --success: #4cffb3;
+      --warn: #ffb84c;
+      --danger: #ff5e5e;
+      --text: #e8e8f0;
+      --muted: #6e6e8a;
+      --radius: 12px;
+      --font: 'Inter', system-ui, sans-serif;
+    }
+
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    /* ─── LOBBY ─── */
+    #lobby {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      gap: 32px;
+    }
+
+    .logo {
+      text-align: center;
+    }
+    .logo-icon {
+      font-size: 56px;
+      display: block;
+      margin-bottom: 8px;
+      filter: drop-shadow(0 0 24px var(--accent));
+    }
+    .logo h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.5px;
+    }
+    .logo p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-top: 4px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      width: 100%;
+      max-width: 420px;
+    }
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      color: var(--text);
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    .field label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .field input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field input::placeholder { color: var(--muted); font-weight: 400; letter-spacing: 0.05em; text-transform: none; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 20px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s, transform 0.1s;
+      width: 100%;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .room-gen {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .room-gen .btn { width: auto; padding: 10px 14px; }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .pill-connecting { background: rgba(255,184,76,0.15); color: var(--warn); }
+    .pill-connected  { background: rgba(76,255,179,0.15); color: var(--success); }
+    .pill-error      { background: rgba(255,94,94,0.15);  color: var(--danger); }
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .pulse { animation: pulse 1.4s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    #lobby-status { text-align: center; min-height: 28px; }
+
+    .how-it-works {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      flex-wrap: wrap;
+      max-width: 420px;
+      width: 100%;
+    }
+    .step {
+      flex: 1;
+      min-width: 100px;
+      text-align: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 10px;
+    }
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .step p { font-size: 0.78rem; color: var(--muted); }
+
+    /* ─── APP ─── */
+    #app {
+      display: none;
+      height: 100vh;
+      flex-direction: column;
+    }
+
+    .topbar {
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .topbar .logo-sm {
+      font-size: 1rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .room-badge {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      color: var(--text);
+    }
+    .topbar .spacer { flex: 1; }
+    .topbar #connection-indicator { font-size: 0.78rem; }
+
+    .main-area {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+      min-height: 0;
+    }
+
+    @media (max-width: 680px) {
+      .main-area { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .panel-body {
+      flex: 1;
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Video + canvas stack */
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .video-wrap video,
+    .video-wrap canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 0;
+    }
+    #local-canvas { z-index: 2; }
+    #local-video { z-index: 1; transform: scaleX(-1); }
+
+    #remote-video-wrap video { z-index: 1; }
+    #remote-canvas { z-index: 2; }
+    #remote-video { transform: scaleX(-1); }
+
+    .video-overlay-msg {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: var(--surface);
+      z-index: 10;
+    }
+    .video-overlay-msg .icon { font-size: 40px; }
+    .video-overlay-msg p { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 0 16px; }
+
+    /* Gesture overlay */
+    .gesture-label {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(6px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      z-index: 20;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    /* Bottom bar */
+    .bottombar {
+      height: 52px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 16px;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .icon-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 0.7rem;
+      color: var(--muted);
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .icon-btn .em { font-size: 18px; }
+    .icon-btn:hover { border-color: var(--accent); color: var(--text); }
+    .icon-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,108,255,0.1); }
+    .icon-btn.danger { border-color: transparent; }
+    .icon-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+    /* Gesture log */
+    #gesture-log {
+      position: fixed;
+      bottom: 64px;
+      right: 12px;
+      width: 220px;
+      background: rgba(13,13,20,0.92);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      font-size: 0.75rem;
+      z-index: 100;
+      display: none;
+    }
+    #gesture-log h4 {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    #gesture-entries {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+    .log-entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .log-entry .who {
+      font-size: 0.65rem;
+      color: var(--muted);
+      min-width: 34px;
+    }
+    .log-entry .who.remote { color: var(--accent2); }
+    .log-entry .gesture { color: var(--text); }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-80px);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 0.85rem;
+      z-index: 9999;
+      transition: transform 0.3s ease;
+      white-space: nowrap;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════ LOBBY ═══════════════ -->
+<div id="lobby">
+  <div class="logo">
+    <span class="logo-icon">🤲</span>
+    <h1>HandBridge</h1>
+    <p>Real-time hand tracking over any network</p>
+  </div>
+
+  <div class="card">
+    <h2>Join a Room</h2>
+    <div class="field">
+      <label>Room Code</label>
+      <div class="room-gen">
+        <input type="text" id="room-input" maxlength="6" placeholder="e.g. XK92AB" autocomplete="off" spellcheck="false" />
+        <button class="btn btn-secondary" id="gen-btn" title="Generate random code">🎲</button>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="join-btn">Connect to Room</button>
+  </div>
+
+  <div id="lobby-status"></div>
+
+  <div class="how-it-works">
+    <div class="step">
+      <div class="step-num">1</div>
+      <p>Generate or type a room code</p>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <p>Share the code with your other device</p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <p>Both devices see each other's hands live</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ APP ═══════════════ -->
+<div id="app">
+  <div class="topbar">
+    <span class="logo-sm">🤲 HandBridge</span>
+    <div class="room-badge" id="topbar-room">—</div>
+    <div class="spacer"></div>
+    <div id="connection-indicator"></div>
+  </div>
+
+  <div class="main-area">
+    <!-- Local -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>📷</span> My Camera
+        <span id="local-role-badge" style="margin-left:auto;font-size:0.7rem;"></span>
+      </div>
+      <div class="panel-body">
+        <div class="video-wrap" id="local-video-wrap">
+          <video id="local-video" autoplay muted playsinline></video>
+          <canvas id="local-canvas"></canvas>
+          <div class="gesture-label" id="local-gesture-label" style="display:none"></div>
+          <div class="video-overlay-msg" id="local-overlay">
+            <span class="icon">📷</span>
+            <p>Requesting camera access…</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Remote -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>🌐</span> Remote Peer
+      </div>
+      <div class="panel-body">
+        <div class="video-wrap" id="remote-video-wrap">
+          <video id="remote-video" autoplay playsinline></video>
+          <canvas id="remote-canvas"></canvas>
+          <div class="gesture-label" id="remote-gesture-label" style="display:none"></div>
+          <div class="video-overlay-msg" id="remote-overlay">
+            <span class="icon">⏳</span>
+            <p id="remote-overlay-text">Waiting for peer to join…</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottombar">
+    <button class="icon-btn" id="toggle-mic-btn">
+      <span class="em">🎤</span>Mic
+    </button>
+    <button class="icon-btn" id="toggle-log-btn">
+      <span class="em">📝</span>Log
+    </button>
+    <button class="icon-btn" id="toggle-hands-btn">
+      <span class="em">🖐️</span>Hands
+    </button>
+    <button class="icon-btn danger" id="leave-btn">
+      <span class="em">🚪</span>Leave
+    </button>
+  </div>
+</div>
+
+<!-- Gesture Log -->
+<div id="gesture-log">
+  <h4>Gesture Log</h4>
+  <div id="gesture-entries"></div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════
+function showToast(msg, duration = 2800) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), duration);
+}
+
+function genRoomCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function setLobbyStatus(html) {
+  document.getElementById('lobby-status').innerHTML = html;
+}
+
+function setConnectionIndicator(state) {
+  const el = document.getElementById('connection-indicator');
+  if (state === 'connecting') {
+    el.innerHTML = `<span class="status-pill pill-connecting"><span class="status-dot pulse"></span>Connecting…</span>`;
+  } else if (state === 'connected') {
+    el.innerHTML = `<span class="status-pill pill-connected"><span class="status-dot"></span>Connected</span>`;
+  } else if (state === 'waiting') {
+    el.innerHTML = `<span class="status-pill pill-connecting"><span class="status-dot pulse"></span>Waiting for peer…</span>`;
+  } else if (state === 'disconnected') {
+    el.innerHTML = `<span class="status-pill pill-error"><span class="status-dot"></span>Peer disconnected</span>`;
+  }
+}
+
+function addGestureLogEntry(who, gesture) {
+  const container = document.getElementById('gesture-entries');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `<span class="who ${who === 'Remote' ? 'remote' : ''}">${who}</span><span class="gesture">${gesture}</span>`;
+  container.prepend(entry);
+  if (container.children.length > 30) container.lastChild.remove();
+}
+
+// ═══════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════
+let socket, peer, localStream, roomCode, myRole;
+let handsEnabled = true;
+let micEnabled = true;
+let mediapipeHands = null;
+let gestureLogVisible = false;
+let lastLocalGesture = '';
+let lastRemoteGesture = '';
+
+// Remote landmark state
+let remoteHandLandmarks = null;
+let remoteHandedness = null;
+
+// ═══════════════════════════════════════
+//  LOBBY
+// ═══════════════════════════════════════
+document.getElementById('gen-btn').addEventListener('click', () => {
+  document.getElementById('room-input').value = genRoomCode();
+});
+
+document.getElementById('room-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('join-btn').click();
+});
+
+document.getElementById('join-btn').addEventListener('click', () => {
+  const code = document.getElementById('room-input').value.toUpperCase().trim();
+  if (!code || code.length < 3) {
+    showToast('⚠️ Enter a room code (min 3 chars)');
+    return;
+  }
+  connectToRoom(code);
+});
+
+// ═══════════════════════════════════════
+//  SOCKET.IO
+// ═══════════════════════════════════════
+function connectToRoom(code) {
+  setLobbyStatus(`<span class="status-pill pill-connecting"><span class="status-dot pulse"></span>Connecting to server…</span>`);
+  document.getElementById('join-btn').disabled = true;
+
+  // Connect to the same origin (works on Render/Railway via HTTPS)
+  socket = io({ transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    socket.emit('join-room', { roomCode: code });
+  });
+
+  socket.on('joined-room', ({ roomCode: rc, role }) => {
+    roomCode = rc;
+    myRole = role;
+    setLobbyStatus(`<span class="status-pill pill-connected"><span class="status-dot"></span>Joined room <strong>${rc}</strong> as ${role}</span>`);
+    startApp(rc, role);
+  });
+
+  socket.on('room-full', () => {
+    setLobbyStatus(`<span class="status-pill pill-error"><span class="status-dot"></span>Room is full. Try a different code.</span>`);
+    document.getElementById('join-btn').disabled = false;
+    socket.disconnect();
+  });
+
+  socket.on('peer-joined', ({ initiator }) => {
+    document.getElementById('remote-overlay-text').textContent = 'Establishing secure connection…';
+    setConnectionIndicator('connecting');
+    initWebRTC(initiator);
+  });
+
+  socket.on('signal', (data) => {
+    if (peer && !peer.destroyed) peer.signal(data);
+  });
+
+  socket.on('gesture-event', ({ landmarks, handedness, gesture }) => {
+    remoteHandLandmarks = landmarks;
+    remoteHandedness = handedness;
+    if (gesture && gesture !== lastRemoteGesture) {
+      lastRemoteGesture = gesture;
+      document.getElementById('remote-gesture-label').textContent = `✋ ${gesture}`;
+      document.getElementById('remote-gesture-label').style.display = 'block';
+      addGestureLogEntry('Remote', gesture);
+      setTimeout(() => { document.getElementById('remote-gesture-label').style.display = 'none'; }, 2000);
+    }
+    // Draw remote landmarks on remote canvas
+    drawRemoteLandmarks();
+  });
+
+  socket.on('peer-disconnected', () => {
+    setConnectionIndicator('disconnected');
+    showToast('⚠️ Peer disconnected');
+    document.getElementById('remote-overlay').style.display = 'flex';
+    document.getElementById('remote-overlay-text').textContent = 'Peer disconnected. Waiting for reconnect…';
+    remoteHandLandmarks = null;
+    clearRemoteCanvas();
+    if (peer) { peer.destroy(); peer = null; }
+  });
+
+  socket.on('connect_error', () => {
+    setLobbyStatus(`<span class="status-pill pill-error"><span class="status-dot"></span>Connection failed. Retrying…</span>`);
+  });
+
+  socket.on('disconnect', () => {
+    if (document.getElementById('app').style.display === 'flex') {
+      setConnectionIndicator('disconnected');
+      showToast('🔌 Disconnected from server');
+    }
+  });
+}
+
+// ═══════════════════════════════════════
+//  APP STARTUP
+// ═══════════════════════════════════════
+async function startApp(rc, role) {
+  document.getElementById('lobby').style.display = 'none';
+  const appEl = document.getElementById('app');
+  appEl.style.display = 'flex';
+
+  document.getElementById('topbar-room').textContent = rc;
+  document.getElementById('local-role-badge').textContent = role;
+  setConnectionIndicator('waiting');
+
+  await initCamera();
+  initMediaPipe();
+}
+
+// ═══════════════════════════════════════
+//  CAMERA
+// ═══════════════════════════════════════
+async function initCamera() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: true,
+    });
+    const vid = document.getElementById('local-video');
+    vid.srcObject = localStream;
+    await vid.play();
+    document.getElementById('local-overlay').style.display = 'none';
+
+    // Size local canvas to video
+    vid.addEventListener('loadedmetadata', resizeLocalCanvas);
+    resizeLocalCanvas();
+  } catch (err) {
+    document.getElementById('local-overlay').querySelector('p').textContent =
+      `Camera error: ${err.message}`;
+    showToast('❌ Camera access denied');
+  }
+}
+
+function resizeLocalCanvas() {
+  const vid = document.getElementById('local-video');
+  const canvas = document.getElementById('local-canvas');
+  canvas.width = vid.videoWidth || 640;
+  canvas.height = vid.videoHeight || 480;
+}
+
+// ═══════════════════════════════════════
+//  WEBRTC (SimplePeer)
+// ═══════════════════════════════════════
+function initWebRTC(initiator) {
+  if (peer) peer.destroy();
+
+  peer = new SimplePeer({
+    initiator,
+    stream: localStream,
+    trickle: true,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' },
+        // Free TURN fallback for restrictive networks
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
+      ],
+    },
+  });
+
+  peer.on('signal', (data) => {
+    socket.emit('signal', data);
+  });
+
+  peer.on('stream', (remoteStream) => {
+    const vid = document.getElementById('remote-video');
+    vid.srcObject = remoteStream;
+    vid.play().catch(() => {});
+    document.getElementById('remote-overlay').style.display = 'none';
+    setConnectionIndicator('connected');
+    showToast('✅ Peer connected!');
+
+    // Size remote canvas
+    vid.addEventListener('loadedmetadata', () => {
+      const canvas = document.getElementById('remote-canvas');
+      canvas.width = vid.videoWidth || 640;
+      canvas.height = vid.videoHeight || 480;
+    });
+  });
+
+  peer.on('error', (err) => {
+    console.error('WebRTC error:', err);
+    showToast('⚠️ Connection error: ' + err.message);
+    setConnectionIndicator('disconnected');
+  });
+
+  peer.on('close', () => {
+    setConnectionIndicator('disconnected');
+    document.getElementById('remote-overlay').style.display = 'flex';
+    document.getElementById('remote-overlay-text').textContent = 'Connection closed.';
+  });
+}
+
+// ═══════════════════════════════════════
+//  MEDIAPIPE HANDS
+// ═══════════════════════════════════════
+function initMediaPipe() {
+  mediapipeHands = new Hands({
+    locateFile: (file) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`,
+  });
+
+  mediapipeHands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.6,
+  });
+
+  mediapipeHands.onResults(onLocalHandResults);
+
+  const videoEl = document.getElementById('local-video');
+  const camera = new Camera(videoEl, {
+    onFrame: async () => {
+      if (handsEnabled) {
+        await mediapipeHands.send({ image: videoEl });
+      }
+    },
+    width: 640,
+    height: 480,
+  });
+  camera.start();
+}
+
+function onLocalHandResults(results) {
+  const canvas = document.getElementById('local-canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = results.image.width;
+  canvas.height = results.image.height;
+
+  ctx.save();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Mirror for selfie view
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+
+  if (results.multiHandLandmarks) {
+    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      const lm = results.multiHandLandmarks[i];
+      const handedness = results.multiHandedness?.[i]?.label || 'Unknown';
+
+      drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: '#7c6cff', lineWidth: 2 });
+      drawLandmarks(ctx, lm, { color: '#ff6cb2', lineWidth: 1, radius: 3 });
+
+      const gesture = detectGesture(lm);
+      if (gesture !== lastLocalGesture) {
+        lastLocalGesture = gesture;
+        document.getElementById('local-gesture-label').textContent = `✋ ${gesture}`;
+        document.getElementById('local-gesture-label').style.display = 'block';
+        addGestureLogEntry('Me', gesture);
+        setTimeout(() => { document.getElementById('local-gesture-label').style.display = 'none'; }, 2000);
+      }
+
+      // Emit landmarks to remote peer via socket (lightweight data channel)
+      socket.emit('gesture-event', {
+        landmarks: lm,
+        handedness,
+        gesture,
+      });
+    }
+  }
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════
+//  DRAW REMOTE LANDMARKS
+// ═══════════════════════════════════════
+function drawRemoteLandmarks() {
+  const canvas = document.getElementById('remote-canvas');
+  const vid = document.getElementById('remote-video');
+  if (!canvas || !vid.videoWidth) return;
+
+  canvas.width = vid.videoWidth || 640;
+  canvas.height = vid.videoHeight || 480;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!remoteHandLandmarks || !handsEnabled) return;
+
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+
+  drawConnectors(ctx, remoteHandLandmarks, HAND_CONNECTIONS, { color: '#4cffb3', lineWidth: 2 });
+  drawLandmarks(ctx, remoteHandLandmarks, { color: '#ffb84c', lineWidth: 1, radius: 3 });
+
+  ctx.restore();
+}
+
+function clearRemoteCanvas() {
+  const canvas = document.getElementById('remote-canvas');
+  if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// ═══════════════════════════════════════
+//  GESTURE DETECTION
+// ═══════════════════════════════════════
+function detectGesture(landmarks) {
+  const tips  = [4, 8, 12, 16, 20];
+  const bases = [3, 6, 10, 14, 18];
+
+  const extended = tips.map((tip, i) => {
+    if (i === 0) {
+      // Thumb: compare x distance
+      return Math.abs(landmarks[tip].x - landmarks[bases[0]].x) > 0.04;
+    }
+    return landmarks[tip].y < landmarks[bases[i]].y;
+  });
+
+  const count = extended.filter(Boolean).length;
+
+  // Specific gestures
+  if (extended[1] && !extended[2] && !extended[3] && !extended[4]) return '☝️ Pointing';
+  if (extended[1] && extended[2] && !extended[3] && !extended[4]) return '✌️ Peace';
+  if (!extended[0] && !extended[1] && !extended[2] && !extended[3] && !extended[4]) return '✊ Fist';
+  if (extended[0] && extended[1] && extended[2] && extended[3] && extended[4]) return '🖐️ Open Hand';
+  if (extended[0] && !extended[1] && !extended[2] && !extended[3] && extended[4]) return '🤙 Shaka';
+  if (!extended[0] && extended[1] && !extended[2] && !extended[3] && !extended[4]) {
+    // Check if thumb is tucked over fingers (thumbs down) vs up
+    const thumbTip = landmarks[4];
+    const indexBase = landmarks[6];
+    return thumbTip.y < indexBase.y ? '👍 Thumbs Up' : '👇 Pointing Down';
+  }
+  if (extended[1] && extended[2] && extended[3] && extended[4] && !extended[0]) return '🤘 Rock';
+
+  return `${count} finger${count !== 1 ? 's' : ''}`;
+}
+
+// ═══════════════════════════════════════
+//  CONTROLS
+// ═══════════════════════════════════════
+document.getElementById('toggle-mic-btn').addEventListener('click', () => {
+  micEnabled = !micEnabled;
+  if (localStream) {
+    localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+  }
+  const btn = document.getElementById('toggle-mic-btn');
+  btn.querySelector('.em').textContent = micEnabled ? '🎤' : '🔇';
+  btn.classList.toggle('active', !micEnabled);
+  showToast(micEnabled ? '🎤 Mic on' : '🔇 Mic muted');
+});
+
+document.getElementById('toggle-log-btn').addEventListener('click', () => {
+  gestureLogVisible = !gestureLogVisible;
+  document.getElementById('gesture-log').style.display = gestureLogVisible ? 'block' : 'none';
+  document.getElementById('toggle-log-btn').classList.toggle('active', gestureLogVisible);
+});
+
+document.getElementById('toggle-hands-btn').addEventListener('click', () => {
+  handsEnabled = !handsEnabled;
+  const btn = document.getElementById('toggle-hands-btn');
+  btn.querySelector('.em').textContent = handsEnabled ? '🖐️' : '🤚';
+  btn.classList.toggle('active', !handsEnabled);
+  if (!handsEnabled) {
+    document.getElementById('local-canvas').getContext('2d')
+      .clearRect(0, 0, 640, 480);
+    clearRemoteCanvas();
+  }
+  showToast(handsEnabled ? '🖐️ Hand tracking on' : '🤚 Hand tracking off');
+});
+
+document.getElementById('leave-btn').addEventListener('click', () => {
+  if (peer) peer.destroy();
+  if (socket) socket.disconnect();
+  if (localStream) localStream.getTracks().forEach(t => t.stop());
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('lobby').style.display = 'flex';
+  document.getElementById('join-btn').disabled = false;
+  setLobbyStatus('');
+  document.getElementById('room-input').value = '';
+  remoteHandLandmarks = null;
+  lastLocalGesture = '';
+  lastRemoteGesture = '';
+});
+
+// Resize observer for canvas sizing
+new ResizeObserver(() => {
+  const vid = document.getElementById('remote-video');
+  if (vid.videoWidth) {
+    const canvas = document.getElementById('remote-canvas');
+    canvas.width = vid.videoWidth;
+    canvas.height = vid.videoHeight;
+  }
+}).observe(document.getElementById('remote-video'));
+</script>
+</body>
+</html>
